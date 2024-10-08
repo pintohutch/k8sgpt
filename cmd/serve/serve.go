@@ -14,9 +14,10 @@ limitations under the License.
 package serve
 
 import (
-	k8sgptserver "github.com/k8sgpt-ai/k8sgpt/pkg/server"
 	"os"
 	"strconv"
+
+	k8sgptserver "github.com/k8sgpt-ai/k8sgpt/pkg/server"
 
 	"github.com/fatih/color"
 	"github.com/k8sgpt-ai/k8sgpt/pkg/ai"
@@ -32,10 +33,11 @@ const (
 )
 
 var (
-	port        string
-	metricsPort string
-	backend     string
-	enableHttp  bool
+	port             string
+	metricsPort      string
+	alertmanagerPort string
+	backend          string
+	enableHttp       bool
 )
 
 var ServeCmd = &cobra.Command{
@@ -197,6 +199,7 @@ func init() {
 	// add flag for backend
 	ServeCmd.Flags().StringVarP(&port, "port", "p", "8080", "Port to run the server on")
 	ServeCmd.Flags().StringVarP(&metricsPort, "metrics-port", "", "8081", "Port to run the metrics-server on")
+	ServeCmd.Flags().StringVarP(&alertmanagerPort, "alertmanager-port", "", "9093", "Port to run the metrics-server on")
 	ServeCmd.Flags().StringVarP(&backend, "backend", "b", "openai", "Backend AI provider")
 	ServeCmd.Flags().BoolVarP(&enableHttp, "http", "", false, "Enable REST/http using gppc-gateway")
 }

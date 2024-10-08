@@ -15,21 +15,25 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/k8sgpt-ai/k8sgpt/pkg/server/analyze"
-	"github.com/k8sgpt-ai/k8sgpt/pkg/server/config"
 	"log"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"github.com/k8sgpt-ai/k8sgpt/pkg/server/analyze"
+	"github.com/k8sgpt-ai/k8sgpt/pkg/server/config"
+
 	gw2 "buf.build/gen/go/k8sgpt-ai/k8sgpt/grpc-ecosystem/gateway/v2/schema/v1/server_analyzer_service/schemav1gateway"
 	gw "buf.build/gen/go/k8sgpt-ai/k8sgpt/grpc-ecosystem/gateway/v2/schema/v1/server_config_service/schemav1gateway"
 	rpc "buf.build/gen/go/k8sgpt-ai/k8sgpt/grpc/go/schema/v1/schemav1grpc"
+	schemav1 "buf.build/gen/go/k8sgpt-ai/k8sgpt/protocolbuffers/go/schema/v1"
 	"github.com/go-logr/zapr"
+	"github.com/prometheus/alertmanager/api/v2/models"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 	"golang.org/x/net/http2"
@@ -42,18 +46,20 @@ import (
 )
 
 type Config struct {
-	Port           string
-	MetricsPort    string
-	Backend        string
-	Key            string
-	Token          string
-	Output         string
-	ConfigHandler  *config.Handler
-	AnalyzeHandler *analyze.Handler
-	Logger         *zap.Logger
-	metricsServer  *http.Server
-	listener       net.Listener
-	EnableHttp     bool
+	Port               string
+	MetricsPort        string
+	AlertmanagerPort   string
+	Backend            string
+	Key                string
+	Token              string
+	Output             string
+	ConfigHandler      *config.Handler
+	AnalyzeHandler     *analyze.Handler
+	Logger             *zap.Logger
+	metricsServer      *http.Server
+	alertmanagerServer *http.Server
+	listener           net.Listener
+	EnableHttp         bool
 }
 
 type Health struct {
@@ -156,6 +162,59 @@ func (s *Config) ServeMetrics() error {
 		}
 	})
 	if err := s.metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+func (s *Config) ServeAlerts() error {
+	s.alertmanagerServer = &http.Server{
+		Addr: fmt.Sprintf(":%s", s.AlertmanagerPort),
+	}
+	s.alertmanagerServer.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Parse URL params.
+		params := r.URL.Query()
+
+		// Prepare AnalyzeRequest from URL params.
+		analyzeRequest := &schemav1.AnalyzeRequest{
+			Backend:  params.Get("backend"),
+			Language: params.Get("language"),
+			Filters:  params["filters"],
+			// TODO add later.
+			Nocache: true,
+			Explain: true,
+		}
+
+		// Extract Prometheus Alert payload.
+		log.Printf("extracting alert payload")
+		var alerts models.PostableAlerts
+		decoder := json.NewDecoder(r.Body)
+		err := decoder.Decode(&alerts)
+		if err != nil {
+			w.Write([]byte(fmt.Sprintf("decode alerts. err: %s", err)))
+			return
+		}
+
+		annotation := params.Get("annotation")
+
+		// For each Alert, analyze events.
+		for _, alert := range alerts {
+			if namespace, ok := alert.Labels["namespace"]; ok {
+				analyzeRequest.Namespace = namespace
+			}
+			if resp, err := s.AnalyzeHandler.Analyze(r.Context(), analyzeRequest); err != nil {
+				w.Write([]byte(fmt.Sprintf("analyze. err: %s", err)))
+				return
+			} else {
+				for _, result := range resp.Results {
+					alert.Annotations[annotation] = result.Details
+				}
+			}
+		}
+
+		// TODO Forward alert to original URI.
+	})
+	if err := s.alertmanagerServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
